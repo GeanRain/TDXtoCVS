@@ -20,7 +20,7 @@
 # Compiled Dynamic libraries
 *.so
 *.dylib
-*.dll
+# *.dll
 
 # Fortran module files
 *.mod
@@ -39,3 +39,17 @@
 
 # debug information files
 *.dwo
+
+# visual studio files
+.vs/
+
+# project output
+/Debug
+/x64
+
+# packet output
+/CHAN/Debug
+/CHAN/x64
+/DebugTool/Debug
+/DebugTool/x64
+
