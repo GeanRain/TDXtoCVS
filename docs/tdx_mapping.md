@@ -6,7 +6,7 @@ This document defines the confirmed data interface between TongDaXin (TDX) and t
 
 - `Func1` control + metadata
 - `Func2` date/time arrays
-- `Func3` OHLC data by type
+- `Func3` price/amount data by type
 
 ## Func1: Control + Metadata
 
@@ -38,7 +38,7 @@ When `cmd=2`:
 - `pIn2[] = time`
   - value format: `HHMM` (range `0000-2359`)
 
-## Func3: OHLC Data by Type
+## Func3: Price/Amount Data by Type
 
 - `pIn1[0] = type`
 - `pIn2[] = data array`
@@ -49,6 +49,8 @@ Type mapping:
 - `2` close
 - `3` high
 - `4` low
+- `5` volume (unit: hand)
+- `6` amount (unit: CNY yuan)
 
 ## Period Code Mapping (TDX 0-13)
 
@@ -82,8 +84,16 @@ The DLL maps TDX market codes to standard suffixes:
 CSV header:
 
 ```
-symbol,period,ts,open,high,low,close
+symbol,period,ts,open,high,low,close,volume,amount
 ```
+
+Merge behavior (auto full + incremental):
+
+- if target CSV does not exist: full export from current input arrays
+- if target CSV exists: merge by `ts`
+- if same `ts` exists and values differ, incoming row overwrites existing row
+- if `ts` does not exist, row is inserted
+- final file is rewritten in ascending `ts` order
 
 Default directory and formatting are controlled by `saveAsCVS.ini` under `[export]`.
 
@@ -104,8 +114,7 @@ Example:
 ### Export config fields
 
 - `append`
-  - `1`: append to existing file
-  - `0`: overwrite on each export (recommended for daily full export)
+  - reserved field; export mode is auto-detected by file existence and merged by `ts`
 - `tz`
   - timezone suffix in `ts`, default `+08`
 - `default_time`

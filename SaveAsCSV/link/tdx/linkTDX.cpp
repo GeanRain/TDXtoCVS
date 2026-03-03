@@ -16,8 +16,8 @@
  *   pIn1[] = date (YYYYMMDD - 19000000)
  *   pIn2[] = time (HHMM, 0000-2359)
  *
- * Func3: OHLC by type
- *   pIn1[0] = type (1=open, 2=close, 3=high, 4=low)
+ * Func3: price/amount data by type
+ *   pIn1[0] = type (1=open, 2=close, 3=high, 4=low, 5=volume, 6=amount)
  *   pIn2[]  = data array
  *
  * Period code mapping used:
@@ -27,8 +27,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -52,6 +54,8 @@ struct ExportState
     bool has_high = false;
     bool has_low = false;
     bool has_close = false;
+    bool has_volume = false;
+    bool has_amount = false;
 
     int count = 0;
     int symbol_numeric = 0;
@@ -64,6 +68,8 @@ struct ExportState
     std::vector<float> high;
     std::vector<float> low;
     std::vector<float> close;
+    std::vector<float> volume;
+    std::vector<float> amount;
 
     std::string csv_dir;
     bool append = false;
@@ -74,6 +80,19 @@ struct ExportState
 };
 
 ExportState g_state;
+
+struct CsvRow
+{
+    std::string symbol;
+    std::string period;
+    std::string ts;
+    float open = 0.0f;
+    float high = 0.0f;
+    float low = 0.0f;
+    float close = 0.0f;
+    float volume = 0.0f;
+    float amount = 0.0f;
+};
 
 std::string join_path(const std::string &a, const std::string &b)
 {
@@ -235,6 +254,66 @@ std::string date_dir_name(int date)
     return oss.str();
 }
 
+std::vector<std::string> split_csv_simple(const std::string &line)
+{
+    std::vector<std::string> cols;
+    std::string token;
+    std::stringstream ss(line);
+    while (std::getline(ss, token, ','))
+        cols.push_back(token);
+    return cols;
+}
+
+float parse_float(const std::string &s)
+{
+    return std::strtof(s.c_str(), nullptr);
+}
+
+bool parse_csv_row(const std::string &line, CsvRow &row)
+{
+    std::vector<std::string> cols = split_csv_simple(line);
+    if (cols.size() < 7)
+        return false;
+
+    row.symbol = cols[0];
+    row.period = cols[1];
+    row.ts = cols[2];
+    row.open = parse_float(cols[3]);
+    row.high = parse_float(cols[4]);
+    row.low = parse_float(cols[5]);
+    row.close = parse_float(cols[6]);
+    row.volume = (cols.size() >= 8) ? parse_float(cols[7]) : 0.0f;
+    row.amount = (cols.size() >= 9) ? parse_float(cols[8]) : 0.0f;
+    return (!row.symbol.empty() && !row.period.empty() && !row.ts.empty());
+}
+
+void load_existing_rows(const std::string &file_path,
+                        const std::string &expect_symbol,
+                        const std::string &expect_period,
+                        std::map<std::string, CsvRow> &rows_by_ts)
+{
+    std::ifstream in(file_path, std::ios::in | std::ios::binary);
+    if (!in.is_open())
+        return;
+
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.empty())
+            continue;
+        if (line.rfind("symbol,period,ts,", 0) == 0)
+            continue;
+
+        CsvRow row;
+        if (!parse_csv_row(line, row))
+            continue;
+        if (row.symbol != expect_symbol || row.period != expect_period)
+            continue;
+
+        rows_by_ts[row.ts] = row;
+    }
+}
+
 void ensure_config_loaded()
 {
     if (g_state.config_loaded)
@@ -263,6 +342,8 @@ void reset_state()
     g_state.has_high = false;
     g_state.has_low = false;
     g_state.has_close = false;
+    g_state.has_volume = false;
+    g_state.has_amount = false;
 
     g_state.count = 0;
     g_state.symbol_numeric = 0;
@@ -275,6 +356,8 @@ void reset_state()
     g_state.high.clear();
     g_state.low.clear();
     g_state.close.clear();
+    g_state.volume.clear();
+    g_state.amount.clear();
 }
 
 void ensure_count(int nCount)
@@ -291,6 +374,8 @@ void ensure_count(int nCount)
         g_state.high.assign(nCount, 0);
         g_state.low.assign(nCount, 0);
         g_state.close.assign(nCount, 0);
+        g_state.volume.assign(nCount, 0);
+        g_state.amount.assign(nCount, 0);
     }
 }
 
@@ -300,17 +385,14 @@ bool write_csv()
 
     if (!g_state.has_meta || !g_state.has_period || !g_state.has_date ||
         !g_state.has_open || !g_state.has_high || !g_state.has_low ||
-        !g_state.has_close)
+        !g_state.has_close || !g_state.has_volume || !g_state.has_amount)
     {
-        LOG_WARN("Export skipped: incomplete data (meta=%d period=%d date=%d ohlc=%d)",
+        LOG_WARN("Export skipped: incomplete data (meta=%d period=%d date=%d ohlc=%d volume=%d amount=%d)",
                  g_state.has_meta, g_state.has_period, g_state.has_date,
-                 (g_state.has_open && g_state.has_high && g_state.has_low && g_state.has_close));
+                 (g_state.has_open && g_state.has_high && g_state.has_low && g_state.has_close),
+                 g_state.has_volume, g_state.has_amount);
         return false;
     }
-
-    int date0 = 0;
-    if (!g_state.date.empty())
-        date0 = static_cast<int>(g_state.date[0]);
 
     std::string base_dir = g_state.csv_dir;
     if (base_dir.empty())
@@ -332,21 +414,13 @@ bool write_csv()
     std::string file_path = join_path(base_dir, symbol_str + "." + period_str + ".csv");
 
     bool file_exists = (GetFileAttributesA(file_path.c_str()) != INVALID_FILE_ATTRIBUTES);
-    std::ios::openmode mode = std::ios::out | std::ios::binary;
-    if (g_state.append)
-        mode |= std::ios::app;
-    else
-        mode |= std::ios::trunc;
+    std::map<std::string, CsvRow> rows_by_ts;
 
-    std::ofstream out(file_path, mode);
-    if (!out.is_open())
-    {
-        LOG_ERROR("Export failed: cannot open file: %s", file_path.c_str());
-        return false;
-    }
-
-    if (!g_state.append || !file_exists)
-        out << "symbol,period,ts,open,high,low,close\n";
+    // Auto mode:
+    // - file not exists: full export from current batch
+    // - file exists: incremental merge by ts, overwrite when same ts appears
+    if (file_exists)
+        load_existing_rows(file_path, symbol_str, period_str, rows_by_ts);
 
     for (int i = 0; i < g_state.count; ++i)
     {
@@ -359,18 +433,47 @@ bool write_csv()
         if (date <= 0)
             continue;
 
-        std::string ts = format_ts(date, time, g_state.tz);
-        out << symbol_str << ',' << period_str << ',' << ts << ','
-            << g_state.open[i] << ',' << g_state.high[i] << ','
-            << g_state.low[i] << ',' << g_state.close[i] << '\n';
+        CsvRow row;
+        row.symbol = symbol_str;
+        row.period = period_str;
+        row.ts = format_ts(date, time, g_state.tz);
+        row.open = g_state.open[i];
+        row.high = g_state.high[i];
+        row.low = g_state.low[i];
+        row.close = g_state.close[i];
+        row.volume = g_state.volume[i];
+        row.amount = g_state.amount[i];
+
+        rows_by_ts[row.ts] = row;
+    }
+
+    std::ofstream out(file_path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+    {
+        LOG_ERROR("Export failed: cannot open file: %s", file_path.c_str());
+        return false;
+    }
+
+    out << "symbol,period,ts,open,high,low,close,volume,amount\n";
+    for (const auto &kv : rows_by_ts)
+    {
+        const CsvRow &row = kv.second;
+        out << row.symbol << ',' << row.period << ',' << row.ts << ','
+            << row.open << ',' << row.high << ','
+            << row.low << ',' << row.close << ','
+            << row.volume << ',' << row.amount << '\n';
     }
 
     out.flush();
-    LOG_INFO("Export done: %s", file_path.c_str());
+    LOG_INFO("Export done: %s (input=%d merged=%d existed=%d)",
+             file_path.c_str(),
+             g_state.count,
+             static_cast<int>(rows_by_ts.size()),
+             file_exists ? 1 : 0);
     return true;
 }
 
-void set_ohlc_by_type(int nCount, int type, const float *data)
+void set_series_by_type(int nCount, int type, const float *data)
 {
     if (!data || nCount <= 0)
         return;
@@ -392,6 +495,14 @@ void set_ohlc_by_type(int nCount, int type, const float *data)
     case 4: // low
         std::copy(data, data + nCount, g_state.low.begin());
         g_state.has_low = true;
+        break;
+    case 5: // volume (hand)
+        std::copy(data, data + nCount, g_state.volume.begin());
+        g_state.has_volume = true;
+        break;
+    case 6: // amount (CNY)
+        std::copy(data, data + nCount, g_state.amount.begin());
+        g_state.has_amount = true;
         break;
     default:
         break;
@@ -464,7 +575,7 @@ void Func2(int nCount, float *pOut, float *pIn1, float *pIn2, float *pIn3)
 }
 
 // Func3: data input by type
-// pIn1[0] = type (1=open,2=close,3=high,4=low)
+// pIn1[0] = type (1=open,2=close,3=high,4=low,5=volume,6=amount)
 // pIn2 = data array
 void Func3(int nCount, float *pOut, float *pIn1, float *pIn2, float *pIn3)
 {
@@ -475,8 +586,8 @@ void Func3(int nCount, float *pOut, float *pIn1, float *pIn2, float *pIn3)
         return;
 
     int type = static_cast<int>(pIn1[0]);
-    set_ohlc_by_type(nCount, type, pIn2);
-    LOG_INFO("OHLC array received: type=%d n=%d", type, nCount);
+    set_series_by_type(nCount, type, pIn2);
+    LOG_INFO("Series array received: type=%d n=%d", type, nCount);
 }
 
 void Func4(int nCount, float *pOut, float *pIn1, float *pIn2, float *pIn3)
